@@ -69,6 +69,46 @@
                 "width": "full",
                 "order": 3,
                 "secret": false
+              },
+              {
+                "id": "loginPrompt",
+                "label": "Login prompt",
+                "type": "text",
+                "placeholder": "login:",
+                "dependsOn": "autoLogin",
+                "width": "half",
+                "order": 4,
+                "secret": false,
+                "validation": {
+                  "maxLength": 64
+                }
+              },
+              {
+                "id": "passwordPrompt",
+                "label": "Password prompt",
+                "type": "text",
+                "placeholder": "password:",
+                "dependsOn": "autoLogin",
+                "width": "half",
+                "order": 5,
+                "secret": false,
+                "validation": {
+                  "maxLength": 64
+                }
+              },
+              {
+                "id": "loginDelayMs",
+                "label": "Prompt timeout (ms)",
+                "type": "number",
+                "dependsOn": "autoLogin",
+                "default": 3000,
+                "width": "half",
+                "order": 6,
+                "secret": false,
+                "validation": {
+                  "min": 500,
+                  "max": 30000
+                }
               }
             ]
           },
@@ -101,53 +141,6 @@
                 "width": "half",
                 "order": 2,
                 "secret": false
-              }
-            ]
-          },
-          {
-            "id": "advanced",
-            "label": "Advanced",
-            "order": 3,
-            "fields": [
-              {
-                "id": "loginPrompt",
-                "label": "Login prompt",
-                "type": "text",
-                "placeholder": "login:",
-                "dependsOn": "autoLogin",
-                "width": "half",
-                "order": 1,
-                "secret": false,
-                "validation": {
-                  "maxLength": 64
-                }
-              },
-              {
-                "id": "passwordPrompt",
-                "label": "Password prompt",
-                "type": "text",
-                "placeholder": "password:",
-                "dependsOn": "autoLogin",
-                "width": "half",
-                "order": 2,
-                "secret": false,
-                "validation": {
-                  "maxLength": 64
-                }
-              },
-              {
-                "id": "loginDelayMs",
-                "label": "Prompt timeout (ms)",
-                "type": "number",
-                "dependsOn": "autoLogin",
-                "default": 3000,
-                "width": "half",
-                "order": 3,
-                "secret": false,
-                "validation": {
-                  "min": 500,
-                  "max": 30000
-                }
               }
             ]
           }

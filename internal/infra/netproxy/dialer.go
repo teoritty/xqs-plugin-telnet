@@ -40,7 +40,10 @@ func (d *Dialer) Dial(ctx context.Context, host string, port int) (io.ReadWriteC
 	d.open++
 	d.mu.Unlock()
 
-	raw, err := d.caller.CallCoreContext(ctx, "net.dial", map[string]any{
+	dialCtx, cancel := context.WithTimeout(ctx, rpc.DialTimeout)
+	defer cancel()
+
+	raw, err := d.caller.CallCoreContext(dialCtx, "net.dial", map[string]any{
 		"network": defaultNetRPC,
 		"host":    host,
 		"port":    port,
@@ -97,7 +100,8 @@ func (c *conn) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), rpc.NetIOTimeout)
+	defer cancel()
 	raw, err := c.caller.CallCoreContext(ctx, "net.read", map[string]any{
 		"handleId": c.handleID,
 		"maxBytes": maxBytes,
@@ -133,7 +137,8 @@ func (c *conn) Write(p []byte) (int, error) {
 	}
 	c.mu.Unlock()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), rpc.NetIOTimeout)
+	defer cancel()
 	_, err := c.caller.CallCoreContext(ctx, "net.write", map[string]any{
 		"handleId":      c.handleID,
 		"contentBase64": base64.StdEncoding.EncodeToString(p),
@@ -153,7 +158,8 @@ func (c *conn) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), rpc.NetIOTimeout)
+	defer cancel()
 	_, _ = c.caller.CallCoreContext(ctx, "net.close", map[string]string{
 		"handleId": c.handleID,
 	})

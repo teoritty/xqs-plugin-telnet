@@ -1,6 +1,9 @@
 package domain
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 var (
 	// ErrInvalidConnection indicates connection parameters failed validation.
@@ -11,10 +14,18 @@ var (
 
 // SanitizedConnectError returns a user-visible message without host/port leakage.
 func SanitizedConnectError() string {
-	return "connection failed"
+	return "Connection failed"
 }
 
 // SanitizedDialError returns a generic dial failure message.
 func SanitizedDialError() string {
-	return "unable to reach remote host"
+	return "Unable to reach remote host"
+}
+
+// SanitizedDialErrorFrom maps a dial error to a user-visible message.
+func SanitizedDialErrorFrom(err error) string {
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		return "Connection timed out"
+	}
+	return SanitizedDialError()
 }

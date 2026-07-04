@@ -47,7 +47,7 @@ func (n *Negotiator) HandleSubnegotiation(opt byte, payload []byte) error {
 func (n *Negotiator) handleWill(opt byte) error {
 	switch opt {
 	case domain.OptEcho:
-		return n.sendDont(opt)
+		return n.sendDo(opt)
 	case domain.OptSuppressGoAhead:
 		return n.sendDo(opt)
 	case domain.OptBinary:

@@ -2,10 +2,17 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/teoritty/xqs-plugin-telnet/internal/domain"
+)
+
+const (
+	initDrainTimeout   = 2 * time.Second
+	stateUpdateRetries = 3
+	stateUpdateBackoff = 100 * time.Millisecond
 )
 
 // ActiveSession holds runtime telnet session state for a single process.
@@ -24,8 +31,8 @@ type Manager struct {
 	log       domain.LoggerPort
 	autologin AutoLoginRunner
 
-	mu      sync.Mutex
-	active  *ActiveSession
+	mu     sync.Mutex
+	active *ActiveSession
 }
 
 // AutoLoginRunner abstracts autologin to avoid circular imports.
@@ -68,7 +75,7 @@ func (m *Manager) Connect(ctx context.Context, cfg domain.ConnectionConfig) erro
 	m.active = active
 	m.mu.Unlock()
 
-	_ = m.terminal.UpdateState(sessionCtx, cfg.SessionID, domain.SessionConnecting, "")
+	m.updateStateWithRetry(sessionCtx, cfg.SessionID, domain.SessionConnecting, "")
 
 	go m.runConnect(sessionCtx, active)
 	return nil
@@ -83,9 +90,7 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 
 	conn, err := m.transport.Dial(ctx, cfg.Host, port)
 	if err != nil {
-		m.log.Warn("dial failed", map[string]string{"reason": "transport"})
-		_ = m.terminal.UpdateState(ctx, cfg.SessionID, domain.SessionError, domain.SanitizedDialError())
-		m.cleanup(active)
+		m.failConnect(ctx, active, domain.SanitizedDialErrorFrom(err), dialLogReason(err))
 		return
 	}
 
@@ -93,8 +98,7 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 	telnetSession, err := m.factory.NewSession(conn, termCfg)
 	if err != nil {
 		_ = conn.Close()
-		_ = m.terminal.UpdateState(ctx, cfg.SessionID, domain.SessionError, domain.SanitizedConnectError())
-		m.cleanup(active)
+		m.failConnect(ctx, active, domain.SanitizedConnectError(), "session_create")
 		return
 	}
 
@@ -102,9 +106,13 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 
 	if err := telnetSession.Handshake(ctx); err != nil {
 		_ = telnetSession.Close()
-		_ = m.terminal.UpdateState(ctx, cfg.SessionID, domain.SessionError, domain.SanitizedConnectError())
-		m.cleanup(active)
+		m.failConnect(ctx, active, domain.SanitizedConnectError(), "handshake")
 		return
+	}
+
+	pending := m.initDrain(ctx, telnetSession)
+	if len(pending) > 0 {
+		_ = m.writeTerminalWithRetry(ctx, cfg.SessionID, pending)
 	}
 
 	if cfg.AutoLoginEnabled() && m.autologin != nil {
@@ -119,7 +127,29 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 		m.readPump(ctx, active)
 	}()
 
-	_ = m.terminal.UpdateState(ctx, cfg.SessionID, domain.SessionReady, "")
+	m.updateStateWithRetry(ctx, cfg.SessionID, domain.SessionReady, "")
+}
+
+func (m *Manager) initDrain(ctx context.Context, session domain.TelnetSessionPort) []byte {
+	drainCtx, cancel := context.WithTimeout(ctx, initDrainTimeout)
+	defer cancel()
+
+	var buf []byte
+	for drainCtx.Err() == nil {
+		data, err := session.ReadUserData(drainCtx)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || drainCtx.Err() != nil {
+				break
+			}
+			break
+		}
+		if len(data) > 0 {
+			buf = append(buf, data...)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return buf
 }
 
 func (m *Manager) readPump(ctx context.Context, active *ActiveSession) {
@@ -133,6 +163,7 @@ func (m *Manager) readPump(ctx context.Context, active *ActiveSession) {
 				return
 			}
 			m.log.Warn("read pump stopped", map[string]string{"reason": "eof"})
+			m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
 			return
 		}
 		if len(data) == 0 {
@@ -140,6 +171,7 @@ func (m *Manager) readPump(ctx context.Context, active *ActiveSession) {
 		}
 
 		if err := m.writeTerminalWithRetry(ctx, active.Config.SessionID, data); err != nil {
+			m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
 			return
 		}
 	}
@@ -159,6 +191,31 @@ func (m *Manager) writeTerminalWithRetry(ctx context.Context, sessionID domain.S
 		return err
 	}
 	return nil
+}
+
+func (m *Manager) updateStateWithRetry(ctx context.Context, sessionID domain.SessionID, state domain.SessionState, errMsg string) {
+	for i := 0; i < stateUpdateRetries; i++ {
+		if err := m.terminal.UpdateState(ctx, sessionID, state, errMsg); err == nil {
+			return
+		}
+		if i+1 < stateUpdateRetries {
+			time.Sleep(stateUpdateBackoff)
+		}
+	}
+	m.log.Warn("updateState failed", map[string]string{"state": string(state)})
+}
+
+func (m *Manager) failConnect(ctx context.Context, active *ActiveSession, userMsg, logReason string) {
+	m.log.Warn("connect failed", map[string]string{"reason": logReason})
+	m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, userMsg)
+	m.cleanup(active)
+}
+
+func dialLogReason(err error) string {
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		return "dial_timeout"
+	}
+	return "transport"
 }
 
 // HandleInput forwards keyboard input to the telnet session.

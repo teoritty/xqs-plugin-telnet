@@ -40,6 +40,15 @@ func TestParserStripsEchoNegotiation(t *testing.T) {
 	if len(sent) == 0 {
 		t.Fatal("expected negotiation response")
 	}
+	want := []byte{domain.IAC, domain.DO, domain.OptEcho}
+	if len(sent[0]) != len(want) {
+		t.Fatalf("response len %d want %d", len(sent[0]), len(want))
+	}
+	for i := range want {
+		if sent[0][i] != want[i] {
+			t.Fatalf("byte %d: got %x want %x", i, sent[0][i], want[i])
+		}
+	}
 }
 
 func TestBuildNAWSCommand(t *testing.T) {

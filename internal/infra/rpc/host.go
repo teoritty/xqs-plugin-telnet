@@ -17,6 +17,8 @@ import (
 const (
 	JSONRPCVersion     = "2.0"
 	DefaultCallTimeout = 5 * time.Second
+	DialTimeout        = 15 * time.Second
+	NetIOTimeout       = 30 * time.Second
 	MaxFrameBytes      = 256 << 10
 )
 
