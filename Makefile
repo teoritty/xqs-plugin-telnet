@@ -2,7 +2,7 @@
 
 BINARY_WIN := xqs-plugin-telnet.exe
 BINARY_UNIX := xqs-plugin-telnet
-VERSION := 1.0.4
+VERSION := 1.0.5
 BUNDLE := dist/xqs-plugin-telnet-$(VERSION).xqsp
 
 .PHONY: build build-windows test check-imports checksums pack release clean
