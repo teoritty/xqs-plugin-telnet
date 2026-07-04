@@ -3,6 +3,8 @@ package usecase
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -162,7 +164,14 @@ func (m *Manager) readPump(ctx context.Context, active *ActiveSession) {
 			if ctx.Err() != nil {
 				return
 			}
-			m.log.Warn("read pump stopped", map[string]string{"reason": "eof"})
+			if isReadIdle(err) {
+				continue
+			}
+			if errors.Is(err, io.EOF) {
+				m.log.Warn("read pump stopped", map[string]string{"reason": "eof"})
+			} else {
+				m.log.Warn("read pump stopped", map[string]string{"reason": "read_error"})
+			}
 			m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
 			return
 		}
@@ -286,6 +295,21 @@ func isRateLimited(err error) bool {
 	}
 	msg := err.Error()
 	return contains(msg, "32003") || contains(msg, "rate")
+}
+
+func isReadIdle(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	return contains(msg, "i/o timeout") || contains(msg, "deadline exceeded")
 }
 
 func contains(s, sub string) bool {

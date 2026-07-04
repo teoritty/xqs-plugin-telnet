@@ -33,8 +33,12 @@ func (h SessionHandlers) HandleWriteInput(params json.RawMessage) {
 	if err != nil || len(data) == 0 {
 		return
 	}
-	ctx := context.Background()
-	_ = h.Manager.HandleInput(ctx, data)
+	payload := append([]byte(nil), data...)
+	// Fire-and-forget: must not block the single-threaded RPC readLoop.
+	go func() {
+		ctx := context.Background()
+		_ = h.Manager.HandleInput(ctx, payload)
+	}()
 }
 
 // HandleResize processes session.resize notification.
@@ -43,7 +47,9 @@ func (h SessionHandlers) HandleResize(params json.RawMessage) {
 	if err != nil {
 		return
 	}
-	_ = h.Manager.HandleResize(cols, rows)
+	go func() {
+		_ = h.Manager.HandleResize(cols, rows)
+	}()
 }
 
 // HandleDisconnect processes session.disconnect notification.

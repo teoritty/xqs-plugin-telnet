@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/teoritty/xqs-plugin-telnet/internal/domain"
@@ -107,6 +108,9 @@ func (c *conn) Read(p []byte) (int, error) {
 		"maxBytes": maxBytes,
 	})
 	if err != nil {
+		if isIdleNetReadError(err) {
+			return 0, nil
+		}
 		return 0, err
 	}
 
@@ -171,3 +175,13 @@ func (c *conn) Close() error {
 
 var _ domain.TransportPort = (*Dialer)(nil)
 var _ io.ReadWriteCloser = (*conn)(nil)
+
+func isIdleNetReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "context canceled")
+}

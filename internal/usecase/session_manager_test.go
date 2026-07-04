@@ -152,3 +152,69 @@ func (s *simpleTelnet) WriteUserData(_ context.Context, data []byte) error {
 }
 func (s *simpleTelnet) SetWindowSize(_, _ uint16) error { return nil }
 func (s *simpleTelnet) Close() error                    { return s.conn.Close() }
+
+type idleTelnet struct {
+	simpleTelnet
+	idleReads int
+}
+
+func (s *idleTelnet) ReadUserData(ctx context.Context) ([]byte, error) {
+	if s.idleReads > 0 {
+		return s.simpleTelnet.ReadUserData(ctx)
+	}
+	s.idleReads++
+	return nil, context.DeadlineExceeded
+}
+
+func TestManagerReadPumpSurvivesIdleRead(t *testing.T) {
+	server := newPipeConn([]byte("prompt> "))
+	term := &mockTerminal{}
+	factory := idleFactory{}
+
+	mgr := usecase.NewManager(
+		&mockTransport{conn: server},
+		term,
+		factory,
+		mockLogger{},
+		nil,
+	)
+
+	cfg := domain.ConnectionConfig{
+		SessionID: "s1",
+		Host:      "127.0.0.1",
+		Port:      23,
+		Protocol:  "telnet",
+	}
+
+	if err := mgr.Connect(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		states, _ := term.snapshot()
+		if containsState(states, "error") {
+			mgr.Disconnect()
+			t.Fatal("session entered error on idle read")
+		}
+		if containsState(states, "ready") {
+			time.Sleep(200 * time.Millisecond)
+			states, _ = term.snapshot()
+			if containsState(states, "error") {
+				mgr.Disconnect()
+				t.Fatal("session entered error after ready")
+			}
+			mgr.Disconnect()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.Disconnect()
+	t.Fatal("session not ready")
+}
+
+type idleFactory struct{}
+
+func (idleFactory) NewSession(conn io.ReadWriteCloser, cfg domain.TerminalConfig) (domain.TelnetSessionPort, error) {
+	return &idleTelnet{simpleTelnet: simpleTelnet{conn: conn, cfg: cfg}}, nil
+}
