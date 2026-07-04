@@ -14,9 +14,12 @@ import (
 )
 
 const (
-	initDrainTimeout       = 2 * time.Second
-	stateUpdateRetries     = 3
-	stateUpdateBackoff     = 100 * time.Millisecond
+	initDrainTimeout        = 2 * time.Second
+	stateUpdateRetries      = 8
+	stateUpdateBackoff      = 100 * time.Millisecond
+	stateUpdateBackoffMax   = 500 * time.Millisecond
+	dialRetryInitial        = 200 * time.Millisecond
+	dialRetryMax            = 500 * time.Millisecond
 	telnetKeepaliveInterval = 30 * time.Second
 	hostPingInterval        = 2 * time.Minute
 	keepaliveFailThreshold  = 3
@@ -24,10 +27,11 @@ const (
 
 // ActiveSession holds runtime telnet session state for a single process.
 type ActiveSession struct {
-	Config  domain.ConnectionConfig
-	Telnet  domain.TelnetSessionPort
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	Config     domain.ConnectionConfig
+	Telnet     domain.TelnetSessionPort
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	connectGen uint64
 }
 
 // Manager coordinates a single per-session plugin lifecycle.
@@ -39,8 +43,10 @@ type Manager struct {
 	autologin AutoLoginRunner
 	host      rpc.Caller
 
-	mu     sync.Mutex
-	active *ActiveSession
+	mu         sync.Mutex
+	active     *ActiveSession
+	connectGen uint64
+	stateMu    sync.Mutex
 }
 
 // AutoLoginRunner abstracts autologin to avoid circular imports.
@@ -73,15 +79,24 @@ func (m *Manager) Connect(ctx context.Context, cfg domain.ConnectionConfig) erro
 		return err
 	}
 
+	m.mu.Lock()
+	if cur := m.active; cur != nil && cur.Config.SessionID == cfg.SessionID && cur.Telnet == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
 	m.Disconnect()
 
+	m.mu.Lock()
+	m.connectGen++
+	gen := m.connectGen
 	sessionCtx, cancel := context.WithCancel(ctx)
 	active := &ActiveSession{
-		Config: cfg,
-		cancel: cancel,
+		Config:     cfg,
+		cancel:     cancel,
+		connectGen: gen,
 	}
-
-	m.mu.Lock()
 	m.active = active
 	m.mu.Unlock()
 
@@ -91,16 +106,20 @@ func (m *Manager) Connect(ctx context.Context, cfg domain.ConnectionConfig) erro
 
 func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 	cfg := active.Config
-	go m.updateStateWithRetry(ctx, cfg.SessionID, domain.SessionConnecting, "")
 
 	port := cfg.Port
 	if port == 0 {
 		port = 23
 	}
 
-	conn, err := m.transport.Dial(ctx, cfg.Host, port)
+	conn, err := m.dialWithRetry(ctx, cfg.Host, port)
 	if err != nil {
-		m.failConnect(ctx, active, domain.SanitizedDialErrorFrom(err), dialLogReason(err))
+		m.failConnect(active, domain.SanitizedDialErrorFrom(err), dialLogReason(err))
+		return
+	}
+
+	if !m.ownsConnect(active) {
+		_ = conn.Close()
 		return
 	}
 
@@ -108,7 +127,7 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 	telnetSession, err := m.factory.NewSession(conn, termCfg)
 	if err != nil {
 		_ = conn.Close()
-		m.failConnect(ctx, active, domain.SanitizedConnectError(), "session_create")
+		m.failConnect(active, domain.SanitizedConnectError(), "session_create")
 		return
 	}
 
@@ -116,7 +135,11 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 
 	if err := telnetSession.Handshake(ctx); err != nil {
 		_ = telnetSession.Close()
-		m.failConnect(ctx, active, domain.SanitizedConnectError(), "handshake")
+		m.failConnect(active, domain.SanitizedConnectError(), "handshake")
+		return
+	}
+
+	if !m.ownsConnect(active) {
 		return
 	}
 
@@ -143,7 +166,44 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 		m.keepaliveLoop(ctx, active)
 	}()
 
-	m.updateStateWithRetry(ctx, cfg.SessionID, domain.SessionReady, "")
+	m.updateStateForActive(active, cfg.SessionID, domain.SessionReady, "")
+}
+
+func (m *Manager) dialWithRetry(ctx context.Context, host string, port int) (io.ReadWriteCloser, error) {
+	backoff := dialRetryInitial
+	var lastErr error
+
+	for {
+		if ctx.Err() != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, ctx.Err()
+		}
+
+		conn, err := m.transport.Dial(ctx, host, port)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		if !isDialRetriable(err) {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, lastErr
+		case <-time.After(backoff):
+		}
+
+		if backoff < dialRetryMax {
+			backoff += 100 * time.Millisecond
+			if backoff > dialRetryMax {
+				backoff = dialRetryMax
+			}
+		}
+	}
 }
 
 func (m *Manager) initDrain(ctx context.Context, session domain.TelnetSessionPort) []byte {
@@ -186,7 +246,7 @@ func (m *Manager) readPump(ctx context.Context, active *ActiveSession) {
 			} else {
 				m.log.Warn("read pump stopped", map[string]string{"reason": "read_error"})
 			}
-			m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
+			m.updateStateForActive(active, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
 			return
 		}
 		if len(data) == 0 {
@@ -194,7 +254,7 @@ func (m *Manager) readPump(ctx context.Context, active *ActiveSession) {
 		}
 
 		if err := m.writeTerminalWithRetry(ctx, active.Config.SessionID, data); err != nil {
-			m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
+			m.updateStateForActive(active, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
 			return
 		}
 	}
@@ -222,7 +282,7 @@ func (m *Manager) keepaliveLoop(ctx context.Context, active *ActiveSession) {
 					"failures": strconv.Itoa(failures),
 				})
 				if failures >= keepaliveFailThreshold {
-					m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
+					m.updateStateForActive(active, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
 					return
 				}
 				continue
@@ -261,29 +321,116 @@ func (m *Manager) writeTerminalWithRetry(ctx context.Context, sessionID domain.S
 	return nil
 }
 
-func (m *Manager) updateStateWithRetry(ctx context.Context, sessionID domain.SessionID, state domain.SessionState, errMsg string) {
-	for i := 0; i < stateUpdateRetries; i++ {
-		if err := m.terminal.UpdateState(ctx, sessionID, state, errMsg); err == nil {
-			return
-		}
-		if i+1 < stateUpdateRetries {
-			time.Sleep(stateUpdateBackoff)
-		}
-	}
-	m.log.Warn("updateState failed", map[string]string{"state": string(state)})
+func (m *Manager) ownsConnect(active *ActiveSession) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.active == active
 }
 
-func (m *Manager) failConnect(ctx context.Context, active *ActiveSession, userMsg, logReason string) {
+func (m *Manager) updateStateForActive(active *ActiveSession, sessionID domain.SessionID, state domain.SessionState, errMsg string) {
+	if !m.ownsConnect(active) {
+		return
+	}
+
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	if !m.ownsConnect(active) {
+		return
+	}
+	m.updateStateWithRetry(sessionID, state, errMsg)
+}
+
+func (m *Manager) updateStateWithRetry(sessionID domain.SessionID, state domain.SessionState, errMsg string) {
+	var lastErr error
+	for i := 0; i < stateUpdateRetries; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultCallTimeout)
+		err := m.terminal.UpdateState(ctx, sessionID, state, errMsg)
+		cancel()
+		if err == nil {
+			return
+		}
+		lastErr = err
+		if i+1 < stateUpdateRetries {
+			backoff := stateUpdateBackoff + time.Duration(i)*50*time.Millisecond
+			if backoff > stateUpdateBackoffMax {
+				backoff = stateUpdateBackoffMax
+			}
+			time.Sleep(backoff)
+		}
+	}
+	m.log.Warn("updateState failed", map[string]string{
+		"state":  string(state),
+		"reason": sanitizeRPCError(lastErr),
+	})
+}
+
+func (m *Manager) failConnect(active *ActiveSession, userMsg, logReason string) {
+	if !m.ownsConnect(active) {
+		return
+	}
 	m.log.Warn("connect failed", map[string]string{"reason": logReason})
-	m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, userMsg)
+	m.updateStateForActive(active, active.Config.SessionID, domain.SessionError, userMsg)
 	m.cleanup(active)
 }
 
+func isDialRetriable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if isDialDenied(err) || isDialLimit(err) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := err.Error()
+	return contains(msg, "32603") ||
+		contains(msg, "request failed") ||
+		contains(msg, "lookup failed") ||
+		contains(msg, "network dial")
+}
+
 func dialLogReason(err error) string {
-	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+	if err == nil {
+		return "transport"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "dial_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return "dial_timeout"
 	}
+	if isDialDenied(err) {
+		return "dial_denied"
+	}
+	if isDialLimit(err) {
+		return "dial_limit"
+	}
 	return "transport"
+}
+
+func isDialDenied(err error) bool {
+	msg := err.Error()
+	return contains(msg, "32001") || contains(msg, "capability denied")
+}
+
+func isDialLimit(err error) bool {
+	return contains(err.Error(), "too many open network handles")
+}
+
+func sanitizeRPCError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
 
 // HandleInput forwards keyboard input to the telnet session.

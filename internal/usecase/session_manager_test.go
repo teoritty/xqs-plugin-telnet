@@ -2,8 +2,10 @@ package usecase_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -220,4 +222,266 @@ type idleFactory struct{}
 
 func (idleFactory) NewSession(conn io.ReadWriteCloser, cfg domain.TerminalConfig) (domain.TelnetSessionPort, error) {
 	return &idleTelnet{simpleTelnet: simpleTelnet{conn: conn, cfg: cfg}}, nil
+}
+
+func TestRunConnectDoesNotEmitConnectingState(t *testing.T) {
+	server := newPipeConn([]byte("banner\r\n"))
+	term := &mockTerminal{}
+
+	mgr := usecase.NewManager(
+		&mockTransport{conn: server},
+		term,
+		domainFactory{},
+		mockLogger{},
+		nil,
+		nil,
+	)
+
+	cfg := domain.ConnectionConfig{
+		SessionID: "s1",
+		Host:      "127.0.0.1",
+		Port:      23,
+		Protocol:  "telnet",
+	}
+
+	if err := mgr.Connect(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		states, _ := term.snapshot()
+		if containsState(states, "ready") {
+			for _, s := range states {
+				if s == "connecting" {
+					t.Fatal("runConnect must not emit connecting; core already sets it")
+				}
+			}
+			mgr.Disconnect()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.Disconnect()
+	t.Fatal("session not ready")
+}
+
+func TestFailConnectEndsInErrorState(t *testing.T) {
+	term := &mockTerminal{}
+	mgr := usecase.NewManager(
+		&mockTransport{err: fmt.Errorf("rpc error 32603: request failed")},
+		term,
+		domainFactory{},
+		mockLogger{},
+		nil,
+		nil,
+	)
+
+	cfg := domain.ConnectionConfig{
+		SessionID: "s1",
+		Host:      "127.0.0.1",
+		Port:      23,
+		Protocol:  "telnet",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := mgr.Connect(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		states, _ := term.snapshot()
+		if containsState(states, "error") {
+			for _, s := range states {
+				if s == "connecting" {
+					t.Fatal("error state must not be overwritten by connecting")
+				}
+			}
+			mgr.Disconnect()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.Disconnect()
+	t.Fatal("expected error state after dial failure")
+}
+
+type ctxAwareTerminal struct {
+	mockTerminal
+	connectCtx context.Context
+}
+
+func (t *ctxAwareTerminal) UpdateState(ctx context.Context, sessionID domain.SessionID, state domain.SessionState, errMsg string) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("update state: context canceled")
+	}
+	return t.mockTerminal.UpdateState(ctx, sessionID, state, errMsg)
+}
+
+func TestUpdateStateUsesIndependentContext(t *testing.T) {
+	term := &ctxAwareTerminal{}
+	mgr := usecase.NewManager(
+		&mockTransport{err: fmt.Errorf("rpc error 32603: request failed")},
+		term,
+		domainFactory{},
+		mockLogger{},
+		nil,
+		nil,
+	)
+
+	connectCtx, connectCancel := context.WithCancel(context.Background())
+	term.connectCtx = connectCtx
+
+	cfg := domain.ConnectionConfig{
+		SessionID: "s1",
+		Host:      "127.0.0.1",
+		Port:      23,
+		Protocol:  "telnet",
+	}
+
+	if err := mgr.Connect(connectCtx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	connectCancel()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		states, _ := term.snapshot()
+		if containsState(states, "error") {
+			mgr.Disconnect()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.Disconnect()
+	t.Fatal("expected error state even after connect context canceled")
+}
+
+type retryTransport struct {
+	mu        sync.Mutex
+	attempts  int
+	failUntil int
+	conn      io.ReadWriteCloser
+}
+
+func (t *retryTransport) Dial(_ context.Context, _ string, _ int) (io.ReadWriteCloser, error) {
+	t.mu.Lock()
+	t.attempts++
+	n := t.attempts
+	t.mu.Unlock()
+	if n <= t.failUntil {
+		return nil, fmt.Errorf("rpc error 32603: request failed")
+	}
+	return t.conn, nil
+}
+
+func (t *retryTransport) snapshotAttempts() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.attempts
+}
+
+func TestDialRetriesOnTransientFailure(t *testing.T) {
+	server := newPipeConn([]byte("Hello\r\n"))
+	transport := &retryTransport{failUntil: 2, conn: server}
+	term := &mockTerminal{}
+
+	mgr := usecase.NewManager(
+		transport,
+		term,
+		domainFactory{},
+		mockLogger{},
+		nil,
+		nil,
+	)
+
+	cfg := domain.ConnectionConfig{
+		SessionID: "s1",
+		Host:      "127.0.0.1",
+		Port:      23,
+		Protocol:  "telnet",
+	}
+
+	if err := mgr.Connect(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		states, _ := term.snapshot()
+		if containsState(states, "ready") {
+			if transport.snapshotAttempts() < 3 {
+				t.Fatalf("expected at least 3 dial attempts, got %d", transport.snapshotAttempts())
+			}
+			mgr.Disconnect()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.Disconnect()
+	t.Fatal("session not ready after dial retries")
+}
+
+func TestConnectSameSessionIsIdempotentWhileConnecting(t *testing.T) {
+	block := make(chan struct{})
+	transport := &blockingTransport{release: block}
+	term := &mockTerminal{}
+
+	mgr := usecase.NewManager(
+		transport,
+		term,
+		domainFactory{},
+		mockLogger{},
+		nil,
+		nil,
+	)
+
+	cfg := domain.ConnectionConfig{
+		SessionID: "s1",
+		Host:      "127.0.0.1",
+		Port:      23,
+		Protocol:  "telnet",
+	}
+
+	if err := mgr.Connect(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&transport.dialCalls) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&transport.dialCalls) != 1 {
+		t.Fatalf("expected first connect to reach dial, got %d calls", transport.dialCalls)
+	}
+
+	if err := mgr.Connect(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if atomic.LoadInt32(&transport.dialCalls) != 1 {
+		t.Fatalf("expected 1 dial call for idempotent connect, got %d", transport.dialCalls)
+	}
+
+	close(block)
+	mgr.Disconnect()
+}
+
+type blockingTransport struct {
+	release   chan struct{}
+	dialCalls int32
+}
+
+func (t *blockingTransport) Dial(_ context.Context, _ string, _ int) (io.ReadWriteCloser, error) {
+	atomic.AddInt32(&t.dialCalls, 1)
+	<-t.release
+	return newPipeConn([]byte("ok\r\n")), nil
 }
