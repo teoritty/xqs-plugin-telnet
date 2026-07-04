@@ -7,7 +7,7 @@
   "license": "GPL-3.0",
   "homepage": "https://github.com/teoritty/xqs-plugin-telnet",
   "tags": ["telnet", "terminal", "protocol"],
-  "minCoreVersion": "1.0.0",
+  "minCoreVersion": "0.2.0",
   "engine": {
     "type": "go-binary",
     "entry": "xqs-plugin-telnet.exe"
