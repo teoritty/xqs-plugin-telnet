@@ -9,6 +9,7 @@ const (
 	WILL byte = 251
 	SB   byte = 250
 	SE   byte = 240
+	NOP  byte = 241
 )
 
 // Telnet option codes.

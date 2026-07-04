@@ -32,6 +32,7 @@ type TelnetSessionPort interface {
 	Handshake(ctx context.Context) error
 	ReadUserData(ctx context.Context) ([]byte, error)
 	WriteUserData(ctx context.Context, data []byte) error
+	KeepAlive() error
 	SetWindowSize(cols, rows uint16) error
 	Close() error
 }

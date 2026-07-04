@@ -28,7 +28,7 @@ func main() {
 	factory := telnet.NewFactory()
 	autoRunner := autologin.NewRunner(secureLog)
 
-	manager := usecase.NewManager(transport, term, factory, secureLog, autoRunner)
+	manager := usecase.NewManager(transport, term, factory, secureLog, autoRunner, caller)
 
 	lifecycle := presentation.LifecycleHandlers{Log: secureLog}
 	session := presentation.SessionHandlers{Manager: manager}

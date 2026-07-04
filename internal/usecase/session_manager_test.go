@@ -88,6 +88,7 @@ func TestManagerConnectReady(t *testing.T) {
 		factory,
 		mockLogger{},
 		nil,
+		nil,
 	)
 
 	cfg := domain.ConnectionConfig{
@@ -151,6 +152,7 @@ func (s *simpleTelnet) WriteUserData(_ context.Context, data []byte) error {
 	return err
 }
 func (s *simpleTelnet) SetWindowSize(_, _ uint16) error { return nil }
+func (s *simpleTelnet) KeepAlive() error                 { return nil }
 func (s *simpleTelnet) Close() error                    { return s.conn.Close() }
 
 type idleTelnet struct {
@@ -176,6 +178,7 @@ func TestManagerReadPumpSurvivesIdleRead(t *testing.T) {
 		term,
 		factory,
 		mockLogger{},
+		nil,
 		nil,
 	)
 

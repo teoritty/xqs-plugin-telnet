@@ -5,16 +5,21 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/teoritty/xqs-plugin-telnet/internal/domain"
+	"github.com/teoritty/xqs-plugin-telnet/internal/infra/rpc"
 )
 
 const (
-	initDrainTimeout   = 2 * time.Second
-	stateUpdateRetries = 3
-	stateUpdateBackoff = 100 * time.Millisecond
+	initDrainTimeout       = 2 * time.Second
+	stateUpdateRetries     = 3
+	stateUpdateBackoff     = 100 * time.Millisecond
+	telnetKeepaliveInterval = 30 * time.Second
+	hostPingInterval        = 2 * time.Minute
+	keepaliveFailThreshold  = 3
 )
 
 // ActiveSession holds runtime telnet session state for a single process.
@@ -32,6 +37,7 @@ type Manager struct {
 	factory   domain.TelnetSessionFactory
 	log       domain.LoggerPort
 	autologin AutoLoginRunner
+	host      rpc.Caller
 
 	mu     sync.Mutex
 	active *ActiveSession
@@ -49,6 +55,7 @@ func NewManager(
 	factory domain.TelnetSessionFactory,
 	log domain.LoggerPort,
 	autologin AutoLoginRunner,
+	host rpc.Caller,
 ) *Manager {
 	return &Manager{
 		transport: transport,
@@ -56,6 +63,7 @@ func NewManager(
 		factory:   factory,
 		log:       log,
 		autologin: autologin,
+		host:      host,
 	}
 }
 
@@ -129,6 +137,12 @@ func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 		m.readPump(ctx, active)
 	}()
 
+	active.wg.Add(1)
+	go func() {
+		defer active.wg.Done()
+		m.keepaliveLoop(ctx, active)
+	}()
+
 	m.updateStateWithRetry(ctx, cfg.SessionID, domain.SessionReady, "")
 }
 
@@ -186,6 +200,51 @@ func (m *Manager) readPump(ctx context.Context, active *ActiveSession) {
 	}
 }
 
+func (m *Manager) keepaliveLoop(ctx context.Context, active *ActiveSession) {
+	telnetTicker := time.NewTicker(telnetKeepaliveInterval)
+	pingTicker := time.NewTicker(hostPingInterval)
+	defer telnetTicker.Stop()
+	defer pingTicker.Stop()
+
+	failures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-telnetTicker.C:
+			telnet := active.Telnet
+			if telnet == nil {
+				continue
+			}
+			if err := telnet.KeepAlive(); err != nil {
+				failures++
+				m.log.Warn("keepalive failed", map[string]string{
+					"failures": strconv.Itoa(failures),
+				})
+				if failures >= keepaliveFailThreshold {
+					m.updateStateWithRetry(ctx, active.Config.SessionID, domain.SessionError, domain.SanitizedConnectError())
+					return
+				}
+				continue
+			}
+			failures = 0
+		case <-pingTicker.C:
+			if m.host == nil {
+				continue
+			}
+			go m.pingHost()
+		}
+	}
+}
+
+func (m *Manager) pingHost() {
+	ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultCallTimeout)
+	defer cancel()
+	if _, err := m.host.CallCoreContext(ctx, "ping", nil); err != nil {
+		m.log.Warn("host ping failed", nil)
+	}
+}
+
 func (m *Manager) writeTerminalWithRetry(ctx context.Context, sessionID domain.SessionID, data []byte) error {
 	for attempts := 0; attempts < 5; attempts++ {
 		err := m.terminal.WriteOutput(ctx, sessionID, data)
@@ -231,9 +290,14 @@ func dialLogReason(err error) string {
 func (m *Manager) HandleInput(ctx context.Context, data []byte) error {
 	s := m.getActive()
 	if s == nil || s.Telnet == nil {
+		m.log.Warn("input ignored", map[string]string{"reason": "session_not_active"})
 		return domain.ErrSessionNotActive
 	}
-	return s.Telnet.WriteUserData(ctx, data)
+	if err := s.Telnet.WriteUserData(ctx, data); err != nil {
+		m.log.Warn("input write failed", map[string]string{"reason": "write_error"})
+		return err
+	}
+	return nil
 }
 
 // HandleResize updates NAWS window size.

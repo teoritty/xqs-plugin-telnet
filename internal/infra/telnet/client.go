@@ -112,6 +112,11 @@ func (s *Session) WriteUserData(ctx context.Context, data []byte) error {
 	return s.writeWithContext(ctx, escaped)
 }
 
+// KeepAlive sends a Telnet NOP to keep the TCP session active.
+func (s *Session) KeepAlive() error {
+	return s.rawWrite([]byte{domain.IAC, domain.NOP})
+}
+
 // SetWindowSize sends NAWS subnegotiation.
 func (s *Session) SetWindowSize(cols, rows uint16) error {
 	if cols == 0 {
