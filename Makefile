@@ -5,7 +5,7 @@ BINARY_UNIX := xqs-plugin-telnet
 VERSION := 1.0.0
 BUNDLE := dist/xqs-plugin-telnet-$(VERSION).xqsp
 
-.PHONY: build build-windows test check-imports checksums pack clean
+.PHONY: build build-windows test check-imports checksums pack release clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o $(BINARY_WIN) ./cmd/plugin
@@ -24,6 +24,9 @@ checksums:
 
 pack: build checksums
 	powershell -ExecutionPolicy Bypass -File scripts/pack.ps1 -Version $(VERSION)
+
+release:
+	powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version $(VERSION)
 
 clean:
 	rm -f $(BINARY_WIN) $(BINARY_UNIX) SHA256SUMS

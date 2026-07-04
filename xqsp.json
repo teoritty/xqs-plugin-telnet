@@ -1,0 +1,158 @@
+{
+  "id": "io.xquakshell.plugin.telnet",
+  "name": "Telnet",
+  "version": "1.0.0",
+  "description": "Telnet terminal sessions for xQuakShell. Warning: telnet transmits data in plaintext.",
+  "author": "teoritty",
+  "license": "GPL-3.0",
+  "homepage": "https://github.com/teoritty/xqs-plugin-telnet",
+  "tags": ["telnet", "terminal", "protocol"],
+  "minCoreVersion": "0.2.0",
+  "engine": {
+    "type": "go-binary",
+    "entry": "xqs-plugin-telnet.exe"
+  },
+  "isolation": "per-session",
+  "activationEvents": [
+    "onProtocol:telnet"
+  ],
+  "capabilities": {
+    "network": {
+      "allowArbitraryOutbound": true,
+      "allowPrivateNetworks": true
+    },
+    "session": {
+      "terminal": true,
+      "remoteFs": false,
+      "connectProtocols": ["telnet"]
+    }
+  },
+  "contributions": {
+    "connectionProtocols": [
+      {
+        "id": "telnet",
+        "label": "Telnet",
+        "defaultPort": 23,
+        "icon": "terminal",
+        "fields": [
+          {
+            "id": "auth",
+            "label": "Authentication",
+            "order": 1,
+            "fields": [
+              {
+                "id": "username",
+                "label": "Username",
+                "type": "text",
+                "required": false,
+                "width": "half",
+                "order": 1,
+                "secret": false,
+                "validation": {
+                  "maxLength": 128
+                }
+              },
+              {
+                "id": "password",
+                "label": "Password",
+                "type": "password",
+                "width": "half",
+                "order": 2,
+                "secret": true
+              },
+              {
+                "id": "autoLogin",
+                "label": "Auto-login",
+                "type": "checkbox",
+                "description": "Automatically send username and password when login prompts appear.",
+                "default": "false",
+                "width": "full",
+                "order": 3,
+                "secret": false
+              }
+            ]
+          },
+          {
+            "id": "terminal",
+            "label": "Terminal",
+            "order": 2,
+            "fields": [
+              {
+                "id": "terminalType",
+                "label": "Terminal type",
+                "type": "select",
+                "default": "vt100",
+                "width": "half",
+                "order": 1,
+                "secret": false,
+                "options": [
+                  { "value": "vt100", "label": "VT100" },
+                  { "value": "vt220", "label": "VT220" },
+                  { "value": "xterm", "label": "xterm" },
+                  { "value": "xterm-256color", "label": "xterm-256color" }
+                ]
+              },
+              {
+                "id": "binaryMode",
+                "label": "Binary mode",
+                "type": "checkbox",
+                "description": "Negotiate TRANSMIT-BINARY telnet option.",
+                "default": "false",
+                "width": "half",
+                "order": 2,
+                "secret": false
+              }
+            ]
+          },
+          {
+            "id": "advanced",
+            "label": "Advanced",
+            "order": 3,
+            "fields": [
+              {
+                "id": "loginPrompt",
+                "label": "Login prompt",
+                "type": "text",
+                "placeholder": "login:",
+                "dependsOn": "autoLogin",
+                "width": "half",
+                "order": 1,
+                "secret": false,
+                "validation": {
+                  "maxLength": 64
+                }
+              },
+              {
+                "id": "passwordPrompt",
+                "label": "Password prompt",
+                "type": "text",
+                "placeholder": "password:",
+                "dependsOn": "autoLogin",
+                "width": "half",
+                "order": 2,
+                "secret": false,
+                "validation": {
+                  "maxLength": 64
+                }
+              },
+              {
+                "id": "loginDelayMs",
+                "label": "Prompt timeout (ms)",
+                "type": "number",
+                "dependsOn": "autoLogin",
+                "default": "3000",
+                "width": "half",
+                "order": 3,
+                "secret": false,
+                "validation": {
+                  "min": 500,
+                  "max": 30000
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

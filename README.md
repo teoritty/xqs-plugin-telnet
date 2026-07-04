@@ -53,6 +53,27 @@ go build -ldflags="-s -w" -trimpath -o xqs-plugin-telnet.exe ./cmd/plugin
 
 Install via **Settings → Plugins → Install bundle…**
 
+## Install from GitHub
+
+xQuakShell discovers plugins via **`xqsp.json`** in the repository root (not `plugin.json` alone).
+
+1. Register the repo in xQuakShell: **Settings → Plugins → GitHub repositories** → add `https://github.com/teoritty/xqs-plugin-telnet`
+2. Ensure `xqsp.json` exists on the default branch (included in this repo).
+3. Publish a **GitHub Release** with assets named for the platform, e.g.:
+   - `xqs-plugin-telnet-windows-amd64.exe`
+   - `SHA256SUMS` (recommended)
+4. **Fetch plugins** from the registered repo, then **Install**.
+
+Build release artifacts locally:
+
+```powershell
+.\scripts\release.ps1 -Version 1.0.0
+```
+
+Upload the files from `dist/release/` to a new GitHub Release with matching tag (e.g. `v1.0.0`). The `version` field in `xqsp.json` should match the release.
+
+Keep `xqsp.json` and `plugin.json` in sync when changing capabilities or connection fields.
+
 ## Architecture
 
 ```
