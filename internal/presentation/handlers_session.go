@@ -21,7 +21,7 @@ func (h SessionHandlers) HandleConnect(params json.RawMessage) (any, error) {
 	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), rpc.DialTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), rpc.SessionConnectTimeout)
 		defer cancel()
 		_ = h.Manager.Connect(ctx, cfg)
 	}()
@@ -56,5 +56,5 @@ func (h SessionHandlers) HandleResize(params json.RawMessage) {
 
 // HandleDisconnect processes session.disconnect notification.
 func (h SessionHandlers) HandleDisconnect(_ json.RawMessage) {
-	h.Manager.Disconnect()
+	go h.Manager.Disconnect()
 }

@@ -46,7 +46,7 @@ func main() {
 	host.RegisterNotification("session.resize", session.HandleResize)
 	host.RegisterNotification("session.disconnect", session.HandleDisconnect)
 	host.RegisterNotification("deactivate", func(_ json.RawMessage) {
-		manager.Disconnect()
+		go manager.Disconnect()
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

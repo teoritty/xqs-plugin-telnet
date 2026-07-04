@@ -47,10 +47,9 @@ func (l *SecureLogger) write(level, msg string, fields map[string]string) {
 		return
 	}
 	safe := redactFields(fields)
-	// Fire-and-forget: log.write must not block the single-threaded RPC readLoop.
-	// Sync handlers (initialize, activate) run inside readLoop; a blocking CallCore
-	// here deadlocks because readLoop cannot read the log.write response until the
-	// handler returns.
+	// Fire-and-forget: log.write must never precede an inbound JSON-RPC response on
+	// stdout. Lifecycle handlers defer logging via rpc.AfterResponder until after
+	// the response frame is written.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultCallTimeout)
 		defer cancel()

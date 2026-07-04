@@ -12,6 +12,21 @@ type LifecycleHandlers struct {
 	Log domain.LoggerPort
 }
 
+type lifecycleResult struct {
+	ok bool
+	log func()
+}
+
+func (r lifecycleResult) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]bool{"ok": r.ok})
+}
+
+func (r lifecycleResult) AfterResponse() {
+	if r.log != nil {
+		r.log()
+	}
+}
+
 // HandleInitialize processes the initialize RPC.
 func (h LifecycleHandlers) HandleInitialize(params json.RawMessage) (any, error) {
 	var initParams struct {
@@ -19,12 +34,18 @@ func (h LifecycleHandlers) HandleInitialize(params json.RawMessage) (any, error)
 		DataDir  string `json:"dataDir"`
 	}
 	_ = json.Unmarshal(params, &initParams)
+
+	var after func()
 	if h.Log != nil {
-		h.Log.Info("plugin initialized", map[string]string{
-			"pluginId": initParams.PluginID,
-		})
+		log := h.Log
+		pluginID := initParams.PluginID
+		after = func() {
+			log.Info("plugin initialized", map[string]string{
+				"pluginId": pluginID,
+			})
+		}
 	}
-	return map[string]bool{"ok": true}, nil
+	return lifecycleResult{ok: true, log: after}, nil
 }
 
 // HandleActivate processes the activate RPC.
@@ -33,18 +54,24 @@ func (h LifecycleHandlers) HandleActivate(params json.RawMessage) (any, error) {
 		Reason string `json:"reason"`
 	}
 	_ = json.Unmarshal(params, &activateParams)
+
+	var after func()
 	if h.Log != nil {
-		h.Log.Info("plugin activated", map[string]string{
-			"reason": activateParams.Reason,
-		})
+		log := h.Log
+		reason := activateParams.Reason
+		after = func() {
+			log.Info("plugin activated", map[string]string{
+				"reason": reason,
+			})
+		}
 	}
-	return map[string]bool{"ok": true}, nil
+	return lifecycleResult{ok: true, log: after}, nil
 }
 
 // HandleShutdown processes the shutdown RPC.
 func (h LifecycleHandlers) HandleShutdown(_ json.RawMessage, manager *usecase.Manager) (any, error) {
 	if manager != nil {
-		manager.Disconnect()
+		go manager.Disconnect()
 	}
 	return map[string]bool{"ok": true}, nil
 }

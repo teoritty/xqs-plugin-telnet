@@ -222,3 +222,99 @@ func readTestMessage(r *bufio.Reader) (rpc.Message, error) {
 	}
 	return msg, nil
 }
+
+// TestHostInitializeResponseBeforeLogWrite ensures the JSON-RPC response to
+// initialize is written before any outbound log.write from AfterResponse hooks.
+func TestHostInitializeResponseBeforeLogWrite(t *testing.T) {
+	t.Parallel()
+
+	coreToPluginR, coreToPluginW := io.Pipe()
+	pluginToCoreR, pluginToCoreW := io.Pipe()
+
+	host := rpc.NewHostFromStreams(coreToPluginR, pluginToCoreW)
+	caller := rpc.HostCaller{Host: host}
+
+	host.Register("initialize", func(_ json.RawMessage) (any, error) {
+		return testInitResult{
+			after: func() {
+				ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultCallTimeout)
+				defer cancel()
+				_, _ = caller.CallCoreContext(ctx, "log.write", map[string]any{
+					"level":   "info",
+					"message": "plugin initialized",
+				})
+			},
+		}, nil
+	})
+
+	fromPlugin := bufio.NewReader(pluginToCoreR)
+	var coreMu sync.Mutex
+	writeCore := func(msg rpc.Message) error {
+		coreMu.Lock()
+		defer coreMu.Unlock()
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return err
+		}
+		if _, err := coreToPluginW.Write(data); err != nil {
+			return err
+		}
+		_, err = coreToPluginW.Write([]byte{'\n'})
+		return err
+	}
+
+	initID := int64(1)
+	if err := writeCore(rpc.Message{
+		JSONRPC: rpc.JSONRPCVersion,
+		ID:      &initID,
+		Method:  "initialize",
+		Params:  json.RawMessage(`{"pluginId":"io.xquakshell.plugin.telnet"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var firstMethod string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		msg, err := readTestMessage(fromPlugin)
+		if err != nil {
+			t.Fatalf("read plugin stdout: %v", err)
+		}
+		if msg.ID != nil && msg.Method != "" {
+			firstMethod = msg.Method
+			if err := writeCore(rpc.Message{
+				JSONRPC: rpc.JSONRPCVersion,
+				ID:      msg.ID,
+				Result:  json.RawMessage(`{"ok":true}`),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		if msg.ID != nil && *msg.ID == initID && msg.Method == "" {
+			firstMethod = ""
+			break
+		}
+	}
+
+	if firstMethod == "log.write" {
+		t.Fatal("log.write reached core before initialize JSON-RPC response")
+	}
+
+	_ = coreToPluginW.Close()
+	_ = pluginToCoreW.Close()
+}
+
+type testInitResult struct {
+	after func()
+}
+
+func (r testInitResult) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]bool{"ok": true})
+}
+
+func (r testInitResult) AfterResponse() {
+	if r.after != nil {
+		r.after()
+	}
+}

@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	JSONRPCVersion     = "2.0"
-	DefaultCallTimeout = 5 * time.Second
-	DialTimeout        = 15 * time.Second
-	NetIOTimeout       = 30 * time.Second
-	MaxFrameBytes      = 256 << 10
+	JSONRPCVersion        = "2.0"
+	DefaultCallTimeout    = 5 * time.Second
+	DialTimeout           = 15 * time.Second
+	SessionConnectTimeout = 60 * time.Second
+	NetIOTimeout          = 30 * time.Second
+	MaxFrameBytes         = 256 << 10
 )
 
 // Message is a JSON-RPC 2.0 frame.
@@ -44,6 +45,11 @@ type Handler func(params json.RawMessage) (any, error)
 
 // NotificationHandler handles host→plugin notifications.
 type NotificationHandler func(params json.RawMessage)
+
+// AfterResponder runs only after the JSON-RPC response has been written to stdout.
+type AfterResponder interface {
+	AfterResponse()
+}
 
 // Host runs the plugin-side JSON-RPC loop on stdin/stdout.
 type Host struct {
@@ -172,7 +178,10 @@ func (h *Host) readLoop() {
 			ch, ok := h.pending[*msg.ID]
 			h.pendingMu.Unlock()
 			if ok {
-				ch <- msg
+				select {
+				case ch <- msg:
+				default:
+				}
 				continue
 			}
 		}
@@ -183,7 +192,8 @@ func (h *Host) readLoop() {
 
 		if msg.ID == nil {
 			if handler, ok := h.notify[msg.Method]; ok {
-				handler(msg.Params)
+				params := append(json.RawMessage(nil), msg.Params...)
+				go handler(params)
 			}
 			continue
 		}
@@ -208,11 +218,16 @@ func (h *Host) readLoop() {
 				_ = h.writeError(reqID, -32603, "marshal result failed")
 				return
 			}
-			_ = h.out.WriteMessage(Message{
+			if err := h.out.WriteMessage(Message{
 				JSONRPC: JSONRPCVersion,
 				ID:      &reqID,
 				Result:  data,
-			})
+			}); err != nil {
+				return
+			}
+			if after, ok := result.(AfterResponder); ok {
+				go after.AfterResponse()
+			}
 		}(handler, id, params)
 	}
 }
