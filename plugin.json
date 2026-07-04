@@ -1,9 +1,9 @@
 {
   "id": "io.xquakshell.plugin.telnet",
   "name": "Telnet",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Telnet terminal sessions for xQuakShell. Warning: telnet transmits data in plaintext.",
-  "minCoreVersion": "0.2.0",
+  "minCoreVersion": "1.0.0",
   "engine": {
     "type": "go-binary",
     "entry": "xqs-plugin-telnet.exe"
