@@ -25,7 +25,7 @@ func (a *Adapter) WriteOutput(ctx context.Context, sessionID domain.SessionID, d
 	if len(data) == 0 {
 		return nil
 	}
-	_, err := a.caller.CallCoreContext(ctx, "session.writeTerminal", map[string]string{
+	_, err := callCore(ctx, a.caller, "session.writeTerminal", map[string]string{
 		"sessionId":    string(sessionID),
 		"outputBase64": base64.StdEncoding.EncodeToString(data),
 	})
@@ -41,11 +41,20 @@ func (a *Adapter) UpdateState(ctx context.Context, sessionID domain.SessionID, s
 	if errMsg != "" {
 		params["error"] = errMsg
 	}
-	_, err := a.caller.CallCoreContext(ctx, "session.updateState", params)
+	_, err := callCore(ctx, a.caller, "session.updateState", params)
 	if err != nil {
 		return fmt.Errorf("update state: %w", err)
 	}
 	return nil
+}
+
+func callCore(ctx context.Context, caller rpc.Caller, method string, params any) ([]byte, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, rpc.DefaultCallTimeout)
+		defer cancel()
+	}
+	return caller.CallCoreContext(ctx, method, params)
 }
 
 // ParseRateLimit reports whether an RPC error is terminal backpressure (-32003).

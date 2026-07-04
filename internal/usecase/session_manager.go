@@ -85,14 +85,14 @@ func (m *Manager) Connect(ctx context.Context, cfg domain.ConnectionConfig) erro
 	m.active = active
 	m.mu.Unlock()
 
-	m.updateStateWithRetry(sessionCtx, cfg.SessionID, domain.SessionConnecting, "")
-
 	go m.runConnect(sessionCtx, active)
 	return nil
 }
 
 func (m *Manager) runConnect(ctx context.Context, active *ActiveSession) {
 	cfg := active.Config
+	go m.updateStateWithRetry(ctx, cfg.SessionID, domain.SessionConnecting, "")
+
 	port := cfg.Port
 	if port == 0 {
 		port = 23

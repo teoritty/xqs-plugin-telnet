@@ -194,22 +194,26 @@ func (h *Host) readLoop() {
 			continue
 		}
 
-		result, err := handler(msg.Params)
-		if err != nil {
-			_ = h.writeError(*msg.ID, -32603, "request failed")
-			continue
-		}
+		id := *msg.ID
+		params := append(json.RawMessage(nil), msg.Params...)
+		go func(fn Handler, reqID int64, reqParams json.RawMessage) {
+			result, err := fn(reqParams)
+			if err != nil {
+				_ = h.writeError(reqID, -32603, "request failed")
+				return
+			}
 
-		data, err := json.Marshal(result)
-		if err != nil {
-			_ = h.writeError(*msg.ID, -32603, "marshal result failed")
-			continue
-		}
-		_ = h.out.WriteMessage(Message{
-			JSONRPC: JSONRPCVersion,
-			ID:      msg.ID,
-			Result:  data,
-		})
+			data, err := json.Marshal(result)
+			if err != nil {
+				_ = h.writeError(reqID, -32603, "marshal result failed")
+				return
+			}
+			_ = h.out.WriteMessage(Message{
+				JSONRPC: JSONRPCVersion,
+				ID:      &reqID,
+				Result:  data,
+			})
+		}(handler, id, params)
 	}
 }
 

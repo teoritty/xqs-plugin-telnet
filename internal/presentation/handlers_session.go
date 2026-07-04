@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/teoritty/xqs-plugin-telnet/internal/infra/rpc"
 	"github.com/teoritty/xqs-plugin-telnet/internal/usecase"
 )
 
@@ -20,7 +21,8 @@ func (h SessionHandlers) HandleConnect(params json.RawMessage) (any, error) {
 	}
 
 	go func() {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), rpc.DialTimeout)
+		defer cancel()
 		_ = h.Manager.Connect(ctx, cfg)
 	}()
 
