@@ -24,7 +24,13 @@ func SanitizedDialError() string {
 
 // SanitizedDialErrorFrom maps a dial error to a user-visible message.
 func SanitizedDialErrorFrom(err error) string {
-	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+	if err == nil {
+		return SanitizedDialError()
+	}
+	if errors.Is(err, context.Canceled) {
+		return "Connection interrupted"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return "Connection timed out"
 	}
 	return SanitizedDialError()

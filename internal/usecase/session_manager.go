@@ -91,7 +91,9 @@ func (m *Manager) Connect(ctx context.Context, cfg domain.ConnectionConfig) erro
 	m.mu.Lock()
 	m.connectGen++
 	gen := m.connectGen
-	sessionCtx, cancel := context.WithCancel(ctx)
+	// Connect owns its deadline; callers must not cancel ctx when Connect returns
+	// (HandleConnect runs asynchronously).
+	sessionCtx, cancel := context.WithTimeout(context.Background(), rpc.SessionConnectTimeout)
 	active := &ActiveSession{
 		Config:     cfg,
 		cancel:     cancel,
@@ -371,6 +373,9 @@ func (m *Manager) failConnect(active *ActiveSession, userMsg, logReason string) 
 	}
 	m.log.Warn("connect failed", map[string]string{"reason": logReason})
 	m.updateStateForActive(active, active.Config.SessionID, domain.SessionError, userMsg)
+	if active.cancel != nil {
+		active.cancel()
+	}
 	m.cleanup(active)
 }
 

@@ -269,7 +269,7 @@ func TestRunConnectDoesNotEmitConnectingState(t *testing.T) {
 func TestFailConnectEndsInErrorState(t *testing.T) {
 	term := &mockTerminal{}
 	mgr := usecase.NewManager(
-		&mockTransport{err: fmt.Errorf("rpc error 32603: request failed")},
+		&mockTransport{err: fmt.Errorf("rpc error 32001: capability denied")},
 		term,
 		domainFactory{},
 		mockLogger{},
@@ -284,10 +284,7 @@ func TestFailConnectEndsInErrorState(t *testing.T) {
 		Protocol:  "telnet",
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := mgr.Connect(ctx, cfg); err != nil {
+	if err := mgr.Connect(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -324,7 +321,7 @@ func (t *ctxAwareTerminal) UpdateState(ctx context.Context, sessionID domain.Ses
 func TestUpdateStateUsesIndependentContext(t *testing.T) {
 	term := &ctxAwareTerminal{}
 	mgr := usecase.NewManager(
-		&mockTransport{err: fmt.Errorf("rpc error 32603: request failed")},
+		&mockTransport{err: fmt.Errorf("rpc error 32001: capability denied")},
 		term,
 		domainFactory{},
 		mockLogger{},
@@ -345,8 +342,6 @@ func TestUpdateStateUsesIndependentContext(t *testing.T) {
 	if err := mgr.Connect(connectCtx, cfg); err != nil {
 		t.Fatal(err)
 	}
-
-	time.Sleep(50 * time.Millisecond)
 	connectCancel()
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -359,7 +354,7 @@ func TestUpdateStateUsesIndependentContext(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	mgr.Disconnect()
-	t.Fatal("expected error state even after connect context canceled")
+	t.Fatal("expected error state even after caller context canceled")
 }
 
 type retryTransport struct {
@@ -484,4 +479,59 @@ func (t *blockingTransport) Dial(_ context.Context, _ string, _ int) (io.ReadWri
 	atomic.AddInt32(&t.dialCalls, 1)
 	<-t.release
 	return newPipeConn([]byte("ok\r\n")), nil
+}
+
+type slowDialTransport struct {
+	conn  io.ReadWriteCloser
+	delay time.Duration
+}
+
+func (t *slowDialTransport) Dial(_ context.Context, _ string, _ int) (io.ReadWriteCloser, error) {
+	time.Sleep(t.delay)
+	return t.conn, nil
+}
+
+func TestConnectSurvivesImmediateParentCancel(t *testing.T) {
+	parent, parentCancel := context.WithCancel(context.Background())
+
+	server := newPipeConn([]byte("Hello Telnet\r\n"))
+	transport := &slowDialTransport{conn: server, delay: 300 * time.Millisecond}
+	term := &mockTerminal{}
+
+	mgr := usecase.NewManager(
+		transport,
+		term,
+		domainFactory{},
+		mockLogger{},
+		nil,
+		nil,
+	)
+
+	cfg := domain.ConnectionConfig{
+		SessionID: "s1",
+		Host:      "127.0.0.1",
+		Port:      23,
+		Protocol:  "telnet",
+	}
+
+	if err := mgr.Connect(parent, cfg); err != nil {
+		t.Fatal(err)
+	}
+	parentCancel()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		states, out := term.snapshot()
+		if containsState(states, "ready") && len(out) > 0 {
+			mgr.Disconnect()
+			return
+		}
+		if containsState(states, "error") {
+			mgr.Disconnect()
+			t.Fatal("connect must not fail when only the caller ctx was canceled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mgr.Disconnect()
+	t.Fatal("session not ready after caller context canceled")
 }
