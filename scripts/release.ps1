@@ -3,6 +3,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot\common.ps1"
+
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
@@ -12,9 +14,9 @@ if (Test-Path $dist) {
 }
 New-Item -ItemType Directory -Path $dist | Out-Null
 
-# GitHub release asset naming: {name}-{os}-{arch}.exe
+# xQuakShell GitHub install parses: {name}-{os}-{arch}.exe
 $assets = @(
-    @{ Out = "xqs-plugin-telnet-windows-amd64.exe"; Env = @{ GOOS = "windows"; GOARCH = "amd64" } }
+    @{ Out = (Get-GitHubReleaseAssetName -OS "windows" -Arch "amd64"); Env = @{ GOOS = "windows"; GOARCH = "amd64" } }
 )
 
 $hashLines = New-Object System.Collections.Generic.List[string]
@@ -39,8 +41,11 @@ $content = ($hashLines -join "`n") + "`n"
 
 Write-Host ""
 Write-Host "Release artifacts in: $dist"
-Write-Host "Upload to GitHub Release v$Version :"
-Write-Host "  - xqs-plugin-telnet-windows-amd64.exe"
+Write-Host "Upload ONLY these files to GitHub Release v$Version :"
+foreach ($asset in $assets) {
+    Write-Host "  - $($asset.Out)"
+}
 Write-Host "  - SHA256SUMS"
 Write-Host ""
-Write-Host "Ensure xqsp.json is committed on the default branch before fetching in xQuakShell."
+Write-Host "Do NOT upload $PluginBinaryName to GitHub Release - xQuakShell will not detect the platform."
+Write-Host "engine.entry in xqsp.json stays $PluginBinaryName; host copies asset to that name on install."

@@ -25,8 +25,19 @@ This plugin requests `allowArbitraryOutbound` and `allowPrivateNetworks` so you 
 
 ## Build
 
+Two binary names are used on purpose:
+
+| Purpose | File name | Used by |
+|---------|-----------|---------|
+| Local install / `.xqsp` bundle | `xqs-plugin-telnet.exe` | `plugin.json` → `engine.entry` |
+| **GitHub Release asset** | `xqs-plugin-telnet-windows-amd64.exe` | xQuakShell platform detection |
+
+xQuakShell parses release assets as `{name}-{os}-{arch}.exe`. Uploading `xqs-plugin-telnet.exe` to GitHub **will not work** — platforms stay empty and fetch/install fails.
+
+### Local build (install folder / bundle)
+
 ```powershell
-.\scripts\build.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
 ```
 
 Or:
@@ -35,6 +46,16 @@ Or:
 $env:CGO_ENABLED=0
 go build -ldflags="-s -w" -trimpath -o xqs-plugin-telnet.exe ./cmd/plugin
 ```
+
+### GitHub Release build
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Version 1.0.0
+```
+
+Output: `dist/release/xqs-plugin-telnet-windows-amd64.exe` + `SHA256SUMS`
+
+Or tag a release in git (`git tag v1.0.0 && git push origin v1.0.0`) — GitHub Actions uploads assets with the correct names automatically.
 
 ## Install
 
@@ -67,10 +88,10 @@ xQuakShell discovers plugins via **`xqsp.json`** in the repository root (not `pl
 Build release artifacts locally:
 
 ```powershell
-.\scripts\release.ps1 -Version 1.0.0
+powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1 -Version 1.0.0
 ```
 
-Upload the files from `dist/release/` to a new GitHub Release with matching tag (e.g. `v1.0.0`). The `version` field in `xqsp.json` should match the release.
+Upload **only** from `dist/release/` (not the root `xqs-plugin-telnet.exe`).
 
 Keep `xqsp.json` and `plugin.json` in sync when changing capabilities or connection fields.
 

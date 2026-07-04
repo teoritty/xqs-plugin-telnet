@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/teoritty/xqs-plugin-telnet/internal/infra/logger"
 	"github.com/teoritty/xqs-plugin-telnet/internal/infra/rpc"
@@ -32,6 +33,17 @@ func TestSecureLoggerRedactsPassword(t *testing.T) {
 	caller := &recordingCaller{}
 	log := logger.NewSecureLogger(caller)
 	log.Info("test", map[string]string{"password": "secret-value"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		caller.mu.Lock()
+		n := len(caller.calls)
+		caller.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	caller.mu.Lock()
 	defer caller.mu.Unlock()

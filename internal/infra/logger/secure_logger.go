@@ -47,13 +47,19 @@ func (l *SecureLogger) write(level, msg string, fields map[string]string) {
 		return
 	}
 	safe := redactFields(fields)
-	ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultCallTimeout)
-	defer cancel()
-	_, _ = l.caller.CallCoreContext(ctx, "log.write", map[string]any{
-		"level":  level,
-		"message": msg,
-		"fields": safe,
-	})
+	// Fire-and-forget: log.write must not block the single-threaded RPC readLoop.
+	// Sync handlers (initialize, activate) run inside readLoop; a blocking CallCore
+	// here deadlocks because readLoop cannot read the log.write response until the
+	// handler returns.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultCallTimeout)
+		defer cancel()
+		_, _ = l.caller.CallCoreContext(ctx, "log.write", map[string]any{
+			"level":   level,
+			"message": msg,
+			"fields":  safe,
+		})
+	}()
 }
 
 func (l *SecureLogger) allow() bool {
