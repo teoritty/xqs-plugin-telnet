@@ -61,7 +61,7 @@
                 "label": "Auto-login",
                 "type": "checkbox",
                 "description": "Automatically send username and password when login prompts appear.",
-                "default": "false",
+                "default": false,
                 "width": "full",
                 "order": 3,
                 "secret": false
@@ -93,7 +93,7 @@
                 "label": "Binary mode",
                 "type": "checkbox",
                 "description": "Negotiate TRANSMIT-BINARY telnet option.",
-                "default": "false",
+                "default": false,
                 "width": "half",
                 "order": 2,
                 "secret": false
@@ -136,7 +136,7 @@
                 "label": "Prompt timeout (ms)",
                 "type": "number",
                 "dependsOn": "autoLogin",
-                "default": "3000",
+                "default": 3000,
                 "width": "half",
                 "order": 3,
                 "secret": false,
