@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
-# Editor/IDE
+# Build artifacts
+dist/
+SHA256SUMS
+
 # .idea/
 # .vscode/
