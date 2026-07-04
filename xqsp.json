@@ -1,7 +1,7 @@
 {
   "id": "io.xquakshell.plugin.telnet",
   "name": "Telnet",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Telnet terminal sessions for xQuakShell. Warning: telnet transmits data in plaintext.",
   "author": "teoritty",
   "license": "GPL-3.0",
