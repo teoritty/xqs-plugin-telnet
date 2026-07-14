@@ -1,9 +1,8 @@
 package rpc
 
 import (
-	"bufio"
-	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +20,14 @@ const (
 	SessionConnectTimeout = 60 * time.Second
 	NetIOTimeout          = 30 * time.Second
 	MaxFrameBytes         = 256 << 10
+
+	// frameHeaderLen is the fixed frame header size used by xQuakShell core's plugin IPC
+	// (4B big-endian length + 1B kind + 4B big-endian channelId). Must match
+	// ssh-client/internal/domain/plugin.FrameHeaderLen on the host side.
+	frameHeaderLen = 9
+	// frameKindJSONRPC marks a frame carrying a JSON-RPC message on the control plane.
+	// Must match ssh-client/internal/domain/plugin.FrameKindJSONRPC.
+	frameKindJSONRPC = 0x01
 )
 
 // Message is a JSON-RPC 2.0 frame.
@@ -53,7 +60,7 @@ type AfterResponder interface {
 
 // Host runs the plugin-side JSON-RPC loop on stdin/stdout.
 type Host struct {
-	in        *bufio.Reader
+	in        io.Reader
 	out       *jsonWriter
 	handlers  map[string]Handler
 	notify    map[string]NotificationHandler
@@ -72,7 +79,7 @@ func NewHost() *Host {
 // NewHostFromStreams creates a plugin host for testing.
 func NewHostFromStreams(in io.Reader, out io.Writer) *Host {
 	h := &Host{
-		in:       bufio.NewReader(in),
+		in:       in,
 		out:      newJSONWriter(out),
 		handlers: make(map[string]Handler),
 		notify:   make(map[string]NotificationHandler),
@@ -260,34 +267,41 @@ func (jw *jsonWriter) WriteMessage(msg Message) error {
 	if len(data) > MaxFrameBytes {
 		return fmt.Errorf("rpc frame exceeds %d bytes", MaxFrameBytes)
 	}
-	if _, err := jw.w.Write(data); err != nil {
-		return err
-	}
-	_, err = jw.w.Write([]byte{'\n'})
+
+	var hdr [frameHeaderLen]byte
+	binary.BigEndian.PutUint32(hdr[0:4], uint32(len(data)))
+	hdr[4] = frameKindJSONRPC
+	binary.BigEndian.PutUint32(hdr[5:9], 0)
+
+	buf := make([]byte, 0, len(hdr)+len(data))
+	buf = append(buf, hdr[:]...)
+	buf = append(buf, data...)
+	_, err = jw.w.Write(buf)
 	return err
 }
 
-func readMessage(r *bufio.Reader) (Message, error) {
-	var line []byte
-	for {
-		fragment, err := r.ReadSlice('\n')
-		line = append(line, fragment...)
-		if len(line) > MaxFrameBytes {
-			return Message{}, fmt.Errorf("rpc frame exceeds %d bytes", MaxFrameBytes)
-		}
-		if err == nil {
-			break
-		}
-		if err != bufio.ErrBufferFull {
-			return Message{}, err
-		}
+func readMessage(r io.Reader) (Message, error) {
+	var hdr [frameHeaderLen]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return Message{}, err
 	}
-	line = bytes.TrimSpace(line)
-	if len(line) == 0 {
+	length := binary.BigEndian.Uint32(hdr[0:4])
+	kind := hdr[4]
+	if length > MaxFrameBytes {
+		return Message{}, fmt.Errorf("rpc frame exceeds %d bytes", MaxFrameBytes)
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return Message{}, err
+	}
+	if kind != frameKindJSONRPC {
+		return Message{}, fmt.Errorf("%w: unexpected frame kind 0x%02x", errParseError, kind)
+	}
+	if len(payload) == 0 {
 		return Message{}, fmt.Errorf("empty rpc frame")
 	}
 	var msg Message
-	if err := json.Unmarshal(line, &msg); err != nil {
+	if err := json.Unmarshal(payload, &msg); err != nil {
 		return Message{}, fmt.Errorf("%w: %w", errParseError, err)
 	}
 	return msg, nil
